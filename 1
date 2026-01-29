@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket Test</title>
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
+</head>
+<body>
+    <h2>WebSocket Test Page</h2>
+    
+    <div>
+        <button onclick="connectWebSocket()">Test WebSocket</button>
+        <button onclick="connectSockJS()">Test SockJS</button>
+    </div>
+    
+    <div id="output" style="margin-top: 20px; padding: 10px; border: 1px solid #ccc;"></div>
+
+    <script>
+        function log(message) {
+            const output = document.getElementById('output');
+            output.innerHTML += '<div>' + new Date().toLocaleTimeString() + ': ' + message + '</div>';
+            console.log(message);
+        }
+        
+        // Тест чистого WebSocket (без SockJS)
+        function connectWebSocket() {
+            log('Trying pure WebSocket...');
+            try {
+                const ws = new WebSocket('ws://localhost:8080/ws');
+                
+                ws.onopen = () => {
+                    log('Pure WebSocket connected!');
+                    ws.send('Hello WebSocket');
+                };
+                
+                ws.onmessage = (event) => {
+                    log('Received: ' + event.data);
+                };
+                
+                ws.onerror = (error) => {
+                    log('WebSocket error: ' + error);
+                };
+                
+                ws.onclose = () => {
+                    log('WebSocket closed');
+                };
+                
+            } catch (e) {
+                log('Error creating WebSocket: ' + e.message);
+            }
+        }
+        
+        // Тест SockJS (рекомендуемый способ для Spring)
+        function connectSockJS() {
+            log('Trying SockJS...');
+            try {
+                const socket = new SockJS('http://localhost:8080/ws');
+                const stompClient = Stomp.over(socket);
+                
+                // Отключаем отладочный вывод
+                stompClient.debug = null;
+                
+                stompClient.connect({}, 
+                    function(frame) {
+                        log('SockJS connected successfully!');
+                        log('Frame: ' + JSON.stringify(frame));
+                        
+                        // Подписываемся на топик
+                        stompClient.subscribe('/topic/public', function(message) {
+                            log('Message from topic: ' + message.body);
+                        });
+                        
+                        // Отправляем тестовое сообщение
+                        const testMsg = {
+                            sender: 'Browser',
+                            content: 'Hello from browser',
+                            type: 'CHAT'
+                        };
+                        stompClient.send('/app/chat.sendMessage', {}, 
+                            JSON.stringify(testMsg));
+                        log('Test message sent');
+                    },
+                    function(error) {
+                        log('SockJS connection error: ' + error);
+                    }
+                );
+                
+            } catch (e) {
+                log('Error with SockJS: ' + e.message);
+            }
+        }
+        
+        // Автотест при загрузке
+        window.onload = function() {
+            log('Page loaded. Click buttons to test connections.');
+        };
+    </script>
+</body>
+</html>
