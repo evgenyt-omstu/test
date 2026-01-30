@@ -1,381 +1,130 @@
 <!DOCTYPE html>
-<html>
+<html lang="ru">
 <head>
-    <title>Simple WebSocket Test</title>
-    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/stomp.js/2.3.3/stomp.min.js"></script>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-        }
-        .status {
-            padding: 10px;
-            border-radius: 5px;
-            margin-bottom: 20px;
-            font-weight: bold;
-            text-align: center;
-        }
-        .connected { background: #d4edda; color: #155724; }
-        .disconnected { background: #f8d7da; color: #721c24; }
-        .connecting { background: #fff3cd; color: #856404; }
-        
-        .panel {
-            border: 1px solid #ddd;
-            border-radius: 5px;
-            padding: 20px;
-            margin-bottom: 20px;
-        }
-        
-        button {
-            padding: 10px 15px;
-            margin: 5px;
-            background: #007bff;
-            color: white;
-            border: none;
-            border-radius: 4px;
-            cursor: pointer;
-        }
-        button:disabled {
-            background: #6c757d;
-            cursor: not-allowed;
-        }
-        
-        input, textarea {
-            width: 100%;
-            padding: 10px;
-            margin: 10px 0;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            box-sizing: border-box;
-        }
-        
-        .messages {
-            height: 300px;
-            overflow-y: auto;
-            border: 1px solid #ddd;
-            border-radius: 4px;
-            padding: 10px;
-            background: #f9f9f9;
-            margin-top: 20px;
-        }
-        
-        .message {
-            margin: 5px 0;
-            padding: 8px;
-            background: white;
-            border-radius: 3px;
-            border-left: 4px solid #007bff;
-        }
-        
-        .message.in { border-left-color: #28a745; }
-        .message.out { border-left-color: #ffc107; }
-        .message.system { border-left-color: #6c757d; }
-    </style>
+  <meta charset="UTF-8">
+  <title>WebSocket / SockJS Test</title>
+
+  <!-- SockJS + STOMP -->
+  <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+    }
+    button {
+      margin-right: 10px;
+    }
+    #log {
+      margin-top: 20px;
+      padding: 10px;
+      border: 1px solid #ccc;
+      height: 300px;
+      overflow-y: auto;
+      background: #f9f9f9;
+      font-family: monospace;
+    }
+  </style>
 </head>
 <body>
-    <h1>Simple WebSocket Tester</h1>
-    
-    <div id="status" class="status disconnected">Disconnected</div>
-    
-    <div class="panel">
-        <h3>Connection</h3>
-        <button onclick="connect()" id="btnConnect">Connect to /ws</button>
-        <button onclick="disconnect()" id="btnDisconnect" disabled>Disconnect</button>
-    </div>
-    
-    <div class="panel">
-        <h3>Subscribe to Topics</h3>
-        <input type="text" id="topicInput" value="/topic/public" placeholder="/topic/...">
-        <button onclick="subscribe()" id="btnSubscribe" disabled>Subscribe</button>
-        <button onclick="unsubscribe()" id="btnUnsubscribe" disabled>Unsubscribe</button>
-    </div>
-    
-    <div class="panel">
-        <h3>Send Message to /app</h3>
-        <div>
-            <input type="text" id="destinationInput" value="/app/test" placeholder="/app/...">
-            <textarea id="messageInput" rows="3" placeholder='Message content (string or JSON)'></textarea>
-            <button onclick="sendMessage()" id="btnSend" disabled>Send Message</button>
-        </div>
-    </div>
-    
-    <div class="panel">
-        <h3>Messages Log</h3>
-        <button onclick="clearMessages()">Clear Log</button>
-        <div id="messages" class="messages"></div>
-    </div>
 
-    <script>
-        // Global variables
-        let stompClient = null;
-        let subscriptions = new Map(); // topic -> subscription object
-        const serverUrl = 'http://localhost:8080';
-        
-        // DOM elements
-        const statusDiv = document.getElementById('status');
-        const messagesDiv = document.getElementById('messages');
-        const btnConnect = document.getElementById('btnConnect');
-        const btnDisconnect = document.getElementById('btnDisconnect');
-        const btnSubscribe = document.getElementById('btnSubscribe');
-        const btnUnsubscribe = document.getElementById('btnUnsubscribe');
-        const btnSend = document.getElementById('btnSend');
-        const topicInput = document.getElementById('topicInput');
-        const destinationInput = document.getElementById('destinationInput');
-        const messageInput = document.getElementById('messageInput');
-        
-        // Update connection status
-        function updateStatus(text, className) {
-            statusDiv.textContent = text;
-            statusDiv.className = `status ${className}`;
-            
-            // Update buttons state
-            const isConnected = className === 'connected';
-            btnConnect.disabled = isConnected;
-            btnDisconnect.disabled = !isConnected;
-            btnSubscribe.disabled = !isConnected;
-            btnSend.disabled = !isConnected;
-        }
-        
-        // Add message to log
-        function addMessage(content, type = 'system') {
-            const messageDiv = document.createElement('div');
-            messageDiv.className = `message ${type}`;
-            messageDiv.innerHTML = `
-                <small>${new Date().toLocaleTimeString()}</small><br>
-                ${content}
-            `;
-            messagesDiv.appendChild(messageDiv);
-            messagesDiv.scrollTop = messagesDiv.scrollHeight;
-        }
-        
-        // Clear messages
-        function clearMessages() {
-            messagesDiv.innerHTML = '';
-            addMessage('Log cleared', 'system');
-        }
-        
-        // Connect to WebSocket
-        function connect() {
-            updateStatus('Connecting...', 'connecting');
-            addMessage('Connecting to WebSocket...', 'system');
-            
-            try {
-                // Create SockJS connection
-                const socket = new SockJS(`${serverUrl}/ws`);
-                stompClient = Stomp.over(socket);
-                
-                // Disable debug output
-                stompClient.debug = () => {};
-                
-                // Connect
-                stompClient.connect({},
-                    function(frame) {
-                        updateStatus(`Connected: ${frame.headers['server'] || 'Success'}`, 'connected');
-                        addMessage(`Connected successfully! Session: ${frame.headers['session']}`, 'system');
-                        
-                        // Enable unsubscribe button if we have subscriptions
-                        btnUnsubscribe.disabled = subscriptions.size === 0;
-                    },
-                    function(error) {
-                        updateStatus('Connection failed', 'disconnected');
-                        addMessage(`Connection error: ${error}`, 'system');
-                        console.error('STOMP error:', error);
-                    }
-                );
-                
-            } catch (e) {
-                updateStatus('Connection error', 'disconnected');
-                addMessage(`Exception: ${e.message}`, 'system');
-                console.error('Exception:', e);
-            }
-        }
-        
-        // Disconnect
-        function disconnect() {
-            if (stompClient && stompClient.connected) {
-                // Unsubscribe from all topics first
-                subscriptions.forEach((sub, topic) => {
-                    sub.unsubscribe();
-                    addMessage(`Unsubscribed from: ${topic}`, 'system');
-                });
-                subscriptions.clear();
-                
-                // Disconnect
-                stompClient.disconnect();
-                updateStatus('Disconnected', 'disconnected');
-                addMessage('Disconnected from WebSocket', 'system');
-                btnUnsubscribe.disabled = true;
-            }
-        }
-        
-        // Subscribe to topic
-        function subscribe() {
-            if (!stompClient || !stompClient.connected) {
-                addMessage('Not connected!', 'system');
-                return;
-            }
-            
-            const topic = topicInput.value.trim();
-            if (!topic) {
-                addMessage('Please enter a topic', 'system');
-                return;
-            }
-            
-            if (subscriptions.has(topic)) {
-                addMessage(`Already subscribed to: ${topic}`, 'system');
-                return;
-            }
-            
-            try {
-                const subscription = stompClient.subscribe(topic, function(message) {
-                    // Parse or display message
-                    let content;
-                    try {
-                        const parsed = JSON.parse(message.body);
-                        content = `<strong>${topic}:</strong> ${JSON.stringify(parsed, null, 2)}`;
-                    } catch {
-                        content = `<strong>${topic}:</strong> ${message.body}`;
-                    }
-                    
-                    addMessage(content, 'in');
-                });
-                
-                subscriptions.set(topic, subscription);
-                addMessage(`Subscribed to: ${topic}`, 'system');
-                btnUnsubscribe.disabled = false;
-                
-            } catch (e) {
-                addMessage(`Subscription error: ${e.message}`, 'system');
-            }
-        }
-        
-        // Unsubscribe from topic
-        function unsubscribe() {
-            const topic = topicInput.value.trim();
-            if (!topic) {
-                addMessage('Please enter a topic to unsubscribe', 'system');
-                return;
-            }
-            
-            if (!subscriptions.has(topic)) {
-                addMessage(`Not subscribed to: ${topic}`, 'system');
-                return;
-            }
-            
-            const subscription = subscriptions.get(topic);
-            subscription.unsubscribe();
-            subscriptions.delete(topic);
-            addMessage(`Unsubscribed from: ${topic}`, 'system');
-            
-            // Disable button if no subscriptions left
-            btnUnsubscribe.disabled = subscriptions.size === 0;
-        }
-        
-        // Send message to /app endpoint
-        function sendMessage() {
-            if (!stompClient || !stompClient.connected) {
-                addMessage('Not connected!', 'system');
-                return;
-            }
-            
-            const destination = destinationInput.value.trim();
-            const message = messageInput.value.trim();
-            
-            if (!destination) {
-                addMessage('Please enter destination', 'system');
-                return;
-            }
-            
-            if (!message) {
-                addMessage('Please enter message', 'system');
-                return;
-            }
-            
-            try {
-                // Try to parse as JSON, otherwise send as string
-                let payload;
-                let contentType = 'text/plain';
-                
-                try {
-                    payload = JSON.parse(message);
-                    contentType = 'application/json';
-                } catch {
-                    payload = message;
-                }
-                
-                // Send message
-                stompClient.send(destination, { 'content-type': contentType }, 
-                    typeof payload === 'string' ? payload : JSON.stringify(payload));
-                
-                // Log outgoing message
-                addMessage(`<strong>To ${destination}:</strong> ${message}`, 'out');
-                messageInput.value = '';
-                
-            } catch (e) {
-                addMessage(`Send error: ${e.message}`, 'system');
-            }
-        }
-        
-        // Test messages
-        function sendTestMessage() {
-            const testMessages = [
-                'Hello World!',
-                '{"action": "test", "data": "sample"}',
-                'Simple string message',
-                '12345'
-            ];
-            
-            const randomMessage = testMessages[Math.floor(Math.random() * testMessages.length)];
-            messageInput.value = randomMessage;
-            sendMessage();
-        }
-        
-        // Auto-test on page load
-        window.onload = function() {
-            addMessage('WebSocket Tester loaded. Click "Connect to /ws" to start.', 'system');
-            
-            // Auto-connect (uncomment if needed)
-            // setTimeout(connect, 1000);
-            
-            // Add some test buttons
-            const testPanel = document.createElement('div');
-            testPanel.className = 'panel';
-            testPanel.innerHTML = `
-                <h3>Quick Tests</h3>
-                <button onclick="sendTestMessage()">Send Random Test</button>
-                <button onclick="subscribeToDefault()">Subscribe to /topic</button>
-            `;
-            document.querySelector('.panel:nth-child(2)').after(testPanel);
-        };
-        
-        // Subscribe to common topics
-        function subscribeToDefault() {
-            const commonTopics = [
-                '/topic/public',
-                '/topic/messages',
-                '/topic/notifications'
-            ];
-            
-            commonTopics.forEach(topic => {
-                topicInput.value = topic;
-                subscribe();
-            });
-        }
-        
-        // Expose functions for console debugging
-        window.ws = {
-            connect,
-            disconnect,
-            subscribe,
-            unsubscribe,
-            send: sendMessage,
-            clear: clearMessages,
-            client: () => stompClient,
-            subscriptions: () => subscriptions
-        };
-    </script>
+<h2>WebSocket / SockJS test</h2>
+
+<div>
+  <button onclick="connectWs()">Connect WS</button>
+  <button onclick="connectSockJs()">Connect SockJS</button>
+  <button onclick="disconnect()">Disconnect</button>
+</div>
+
+<br/>
+
+<div>
+  <input id="message" type="text" placeholder="Message to /app/test" size="40">
+  <button onclick="sendMessage()">Send</button>
+</div>
+
+<div id="log"></div>
+
+<script>
+  let stompClient = null;
+
+  function log(msg) {
+    const logDiv = document.getElementById("log");
+    logDiv.innerHTML += msg + "<br/>";
+    logDiv.scrollTop = logDiv.scrollHeight;
+  }
+
+  function connectWs() {
+    disconnect();
+
+    const protocol = location.protocol === "https:" ? "wss" : "ws";
+    const wsUrl = protocol + "://" + location.host + "/ws";
+
+    log("Connecting via WebSocket: " + wsUrl);
+
+    const socket = new WebSocket(wsUrl);
+    stompClient = Stomp.over(socket);
+
+    stompClient.debug = null;
+
+    stompClient.connect({}, onConnected, onError);
+  }
+
+  function connectSockJs() {
+    disconnect();
+
+    const sockJsUrl = location.protocol + "//" + location.host + "/ws/sockjs";
+    log("Connecting via SockJS: " + sockJsUrl);
+
+    const socket = new SockJS(sockJsUrl);
+    stompClient = Stomp.over(socket);
+
+    stompClient.debug = null;
+
+    stompClient.connect({}, onConnected, onError);
+  }
+
+  function onConnected() {
+    log("CONNECTED");
+
+    stompClient.subscribe("/topic", function (message) {
+      log("TOPIC: " + message.body);
+    });
+
+    // если нужен конкретный топик
+    stompClient.subscribe("/topic/test", function (message) {
+      log("TOPIC /test: " + message.body);
+    });
+  }
+
+  function onError(error) {
+    log("ERROR: " + error);
+  }
+
+  function sendMessage() {
+    if (!stompClient || !stompClient.connected) {
+      log("Not connected");
+      return;
+    }
+
+    const text = document.getElementById("message").value;
+
+    stompClient.send("/app/test", {}, JSON.stringify({
+      message: text,
+      timestamp: new Date().toISOString()
+    }));
+
+    log("SENT: " + text);
+  }
+
+  function disconnect() {
+    if (stompClient) {
+      stompClient.disconnect(() => log("DISCONNECTED"));
+      stompClient = null;
+    }
+  }
+</script>
+
 </body>
 </html>
