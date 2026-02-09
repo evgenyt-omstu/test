@@ -1,0 +1,70 @@
+@Repository
+public class RevisionedEntryRepository {
+
+    private final JdbcTemplate jdbcTemplate;
+
+    public RevisionedEntryRepository(JdbcTemplate jdbcTemplate) {
+        this.jdbcTemplate = jdbcTemplate;
+    }
+
+    @Transactional
+    public void insertNewRevision(
+            String objectClass,
+            long globalId,
+            String lockToken
+    ) {
+
+        String sql = """
+            WITH ts AS (
+                SELECT now() AS ts
+            ),
+            lock_ok AS (
+                SELECT 1
+                FROM object_lock ol, ts
+                WHERE ol.global_id = ?
+                  AND ol.token     = ?
+                  AND ol.expire    > ts.ts
+            ),
+            closed AS (
+                UPDATE revisioned_entry_main
+                   SET closed_at = ts.ts
+                  FROM ts
+                 WHERE global_id = ?
+                   AND closed_at = TIMESTAMP '3000-01-01 00:00:00'
+                   AND EXISTS (SELECT 1 FROM lock_ok)
+            )
+            INSERT INTO revisioned_entry_main (
+                object_class,
+                global_id,
+                saved_at,
+                closed_at,
+                lock_id
+            )
+            SELECT
+                ?,
+                ?,
+                ts.ts,
+                TIMESTAMP '3000-01-01 00:00:00',
+                ?
+            FROM ts
+            WHERE EXISTS (SELECT 1 FROM lock_ok)
+            """;
+
+        int inserted = jdbcTemplate.update(
+            sql,
+            globalId,     // lock_ok.global_id
+            lockToken,    // lock_ok.token
+            globalId,     // close previous active
+            objectClass,  // insert.object_class
+            globalId,     // insert.global_id
+            lockToken     // insert.lock_id
+        );
+
+        if (inserted == 0) {
+            throw new IllegalStateException(
+                "Object lock is missing, expired or does not belong to globalId="
+                + globalId + ", token=" + lockToken
+            );
+        }
+    }
+}
