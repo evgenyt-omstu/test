@@ -1,43 +1,21 @@
-WITH ts AS (
-    SELECT now() AS ts
+WITH src (id, number, content) AS (
+  VALUES
+    (1, 'A-001', '{"a":1}'),
+    (2, 'A-002', '{"b":2}'),
+    (3, 'A-003', '{"c":3}')
 ),
-lock_ok AS (
-    SELECT 1
-    FROM object_lock ol, ts
-    WHERE ol.global_id = :globalId
-      AND ol.token     = :lockToken
-      AND ol.expire    > ts.ts
-),
-prev AS (
-    -- Берём активную запись (если есть) и блокируем её на время транзакции
-    SELECT rem.id, rem.revision, rem.version
-    FROM revisioned_entry_main rem
-    WHERE rem.global_id = :globalId
-      AND rem.closed_at = TIMESTAMP '3000-01-01 00:00:00'
-      AND EXISTS (SELECT 1 FROM lock_ok)
-    FOR UPDATE
-),
-closed AS (
-    UPDATE revisioned_entry_main rem
-       SET closed_at = ts.ts
-      FROM ts
-     WHERE rem.id IN (SELECT id FROM prev)
+ins_index AS (
+  INSERT INTO "index" (id, number)
+  SELECT m.id, s.number
+  FROM src s
+  JOIN main m ON m.id = s.id
+  ON CONFLICT (id) DO UPDATE
+    SET number = EXCLUDED.number
+  RETURNING id
 )
-INSERT INTO revisioned_entry_main (
-    object_class,
-    global_id,
-    revision,
-    version,
-    saved_at,
-    closed_at
-)
-SELECT
-    :objectClass,
-    :globalId,
-    COALESCE((SELECT revision FROM prev), 0) + 1,
-    COALESCE((SELECT version  FROM prev), 0) + 1,
-    ts.ts,
-    TIMESTAMP '3000-01-01 00:00:00'
-FROM ts
-WHERE EXISTS (SELECT 1 FROM lock_ok)
-RETURNING id, revision, version;
+INSERT INTO data (id, content)
+SELECT i.id, s.content::jsonb
+FROM ins_index i
+JOIN src s USING (id)
+ON CONFLICT (id) DO UPDATE
+  SET content = EXCLUDED.content;
