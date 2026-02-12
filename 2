@@ -1,21 +1,116 @@
-WITH src (id, number, content) AS (
-  VALUES
-    (1, 'A-001', '{"a":1}'),
-    (2, 'A-002', '{"b":2}'),
-    (3, 'A-003', '{"c":3}')
+WITH
+src_from_app AS (
+  SELECT *
+  FROM (
+    VALUES
+      ((?::bigint, ?::varchar, ?::bigint, ?::date, ?::date, ?::varchar, ?::int, ?::int))
+      -- ,((...)), ...
+  ) AS appTable(id, object_class, global_id, actual_from, actual_to, draft_status, revision, version)
 ),
-ins_index AS (
-  INSERT INTO "index" (id, number)
-  SELECT m.id, s.number
-  FROM src s
-  JOIN main m ON m.id = s.id
-  ON CONFLICT (id) DO UPDATE
-    SET number = EXCLUDED.number
-  RETURNING id
+
+const AS (
+  SELECT
+    now()::timestamp                AS ts_now,
+    DATE '3000-01-01'               AS biz_inf,
+    TIMESTAMP '3000-01-01 00:00:00' AS tech_inf
+),
+
+active_seg AS (
+  SELECT
+    s.*,
+    seg.actual_from AS seg_from,
+    seg.actual_to   AS seg_to
+  FROM src_from_app s
+  LEFT JOIN LATERAL (
+    SELECT tm.actual_from, tm.actual_to
+    FROM trade_main tm
+    CROSS JOIN const c
+    WHERE tm.object_class = s.object_class
+      AND tm.global_id    = s.global_id
+      AND tm.closed_at    = c.tech_inf
+      AND s.actual_from  >= tm.actual_from
+      AND s.actual_from  <  tm.actual_to
+    ORDER BY tm.actual_from DESC
+    LIMIT 1
+  ) seg ON TRUE
+),
+
+/* version меняется только для CONFIRMED => для DRAFT принудительно NULL */
+src_norm AS (
+  SELECT
+    a.id, a.object_class, a.global_id,
+    a.actual_from,
+    COALESCE(a.actual_to, c.biz_inf) AS actual_to,
+    a.draft_status,
+    a.revision,
+    CASE
+      WHEN a.draft_status = 'CONFIRMED' THEN a.version
+      ELSE NULL
+    END AS version,
+    a.seg_from, a.seg_to
+  FROM active_seg a
+  CROSS JOIN const c
+),
+
+cut_business_period AS (
+  UPDATE trade_main tm
+  SET actual_to = s.actual_from
+  FROM src_norm s
+  CROSS JOIN const c
+  WHERE s.seg_from IS NOT NULL
+    AND s.actual_from > s.seg_from
+    AND tm.object_class = s.object_class
+    AND tm.global_id    = s.global_id
+    AND tm.closed_at    = c.tech_inf
+    AND tm.actual_from  = s.seg_from
+    AND tm.actual_to    = s.seg_to
+  RETURNING tm.id
+),
+
+close_technical AS (
+  UPDATE trade_main tm
+  SET closed_at = c.ts_now
+  FROM src_norm s
+  CROSS JOIN const c
+  WHERE tm.object_class = s.object_class
+    AND tm.global_id    = s.global_id
+    AND tm.closed_at    = c.tech_inf
+    AND (
+      (s.draft_status = 'DRAFT' AND tm.draft_status = 'DRAFT')
+      OR
+      (s.draft_status = 'CONFIRMED' AND (
+          tm.draft_status = 'DRAFT'
+          OR (
+            tm.draft_status = 'CONFIRMED'
+            AND s.seg_from IS NOT NULL
+            AND tm.actual_from = s.seg_from
+            AND tm.actual_to   = CASE
+                                   WHEN s.actual_from > s.seg_from THEN s.actual_from
+                                   ELSE s.seg_to
+                                 END
+          )
+      ))
+    )
+  RETURNING tm.id
+),
+
+ins AS (
+  INSERT INTO trade_main (
+    id, object_class, global_id,
+    actual_from, actual_to,
+    draft_status,
+    revision, version,
+    saved_at, closed_at
+  )
+  SELECT
+    s.id, s.object_class, s.global_id,
+    s.actual_from, s.actual_to,
+    s.draft_status,
+    s.revision, s.version,
+    c.ts_now, c.tech_inf
+  FROM src_norm s
+  CROSS JOIN const c
+  RETURNING *
 )
-INSERT INTO data (id, content)
-SELECT i.id, s.content::jsonb
-FROM ins_index i
-JOIN src s USING (id)
-ON CONFLICT (id) DO UPDATE
-  SET content = EXCLUDED.content;
+
+SELECT * FROM ins;
