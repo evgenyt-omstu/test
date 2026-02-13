@@ -3,9 +3,11 @@ src_from_app AS (
   SELECT *
   FROM (
     VALUES
-      ((?::bigint, ?::varchar, ?::bigint, ?::date, ?::date, ?::varchar, ?::int, ?::int))
-      -- ,((...)), ...
-  ) AS appTable(id, object_class, global_id, actual_from, actual_to, draft_status, revision, version)
+      (?::bigint, ?::varchar, ?::bigint, ?::date, ?::date, ?::varchar, ?::int, ?::int, ?::varchar)
+      -- ,(...)
+  ) AS appTable(
+    id, object_class, global_id, actual_from, actual_to, draft_status, revision, version, token
+  )
 ),
 
 const AS (
@@ -13,6 +15,19 @@ const AS (
     now()::timestamp                AS ts_now,
     DATE '3000-01-01'               AS biz_inf,
     TIMESTAMP '3000-01-01 00:00:00' AS tech_inf
+),
+
+/* TRUE только если ДЛЯ КАЖДОЙ строки src есть валидный лок по token+global_id и expire >= now() */
+lock_check AS (
+  SELECT NOT EXISTS (
+    SELECT 1
+    FROM src_from_app s
+    LEFT JOIN murex.object_lock l
+      ON l.token     = s.token
+     AND l.global_id = s.global_id
+     AND l.expire   >= now()
+    WHERE l.token IS NULL
+  ) AS all_records_have_lock
 ),
 
 active_seg AS (
@@ -35,7 +50,7 @@ active_seg AS (
   ) seg ON TRUE
 ),
 
-/* version меняется только для CONFIRMED => для DRAFT принудительно NULL */
+/* version меняется только при CONFIRMED */
 src_norm AS (
   SELECT
     a.id, a.object_class, a.global_id,
@@ -43,11 +58,9 @@ src_norm AS (
     COALESCE(a.actual_to, c.biz_inf) AS actual_to,
     a.draft_status,
     a.revision,
-    CASE
-      WHEN a.draft_status = 'CONFIRMED' THEN a.version
-      ELSE NULL
-    END AS version,
-    a.seg_from, a.seg_to
+    CASE WHEN a.draft_status = 'CONFIRMED' THEN a.version ELSE NULL END AS version,
+    a.seg_from, a.seg_to,
+    a.token
   FROM active_seg a
   CROSS JOIN const c
 ),
@@ -57,6 +70,7 @@ cut_business_period AS (
   SET actual_to = s.actual_from
   FROM src_norm s
   CROSS JOIN const c
+  JOIN lock_check lc ON lc.all_records_have_lock
   WHERE s.seg_from IS NOT NULL
     AND s.actual_from > s.seg_from
     AND tm.object_class = s.object_class
@@ -64,7 +78,6 @@ cut_business_period AS (
     AND tm.closed_at    = c.tech_inf
     AND tm.actual_from  = s.seg_from
     AND tm.actual_to    = s.seg_to
-  RETURNING tm.id
 ),
 
 close_technical AS (
@@ -72,6 +85,7 @@ close_technical AS (
   SET closed_at = c.ts_now
   FROM src_norm s
   CROSS JOIN const c
+  JOIN lock_check lc ON lc.all_records_have_lock
   WHERE tm.object_class = s.object_class
     AND tm.global_id    = s.global_id
     AND tm.closed_at    = c.tech_inf
@@ -91,7 +105,6 @@ close_technical AS (
           )
       ))
     )
-  RETURNING tm.id
 ),
 
 ins AS (
@@ -110,7 +123,6 @@ ins AS (
     c.ts_now, c.tech_inf
   FROM src_norm s
   CROSS JOIN const c
-  RETURNING *
+  JOIN lock_check lc ON lc.all_records_have_lock
 )
-
-SELECT * FROM ins;
+SELECT (SELECT all_records_have_lock FROM lock_check) AS all_records_have_lock;
